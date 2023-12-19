@@ -1,0 +1,178 @@
+---
+title: "World Population Densities"
+format: html
+editor: visual
+---
+
+## Querying
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+```
+
+## Inspiration
+
+This is a remix of the u/Quetzalcoatl\_\_'s [post](https://www.reddit.com/r/dataisbeautiful/comments/18hyzto/oc_to_give_an_order_of_magnitude/) on 2023-12-13 that shows a scatter plot of population (Y-axis) and area (X-axis) for countries across the world, where data points are represented by country flags. There is an additional data point representing the European Union.
+
+[![](references/20231213_country_population_area.jpg)](https://www.reddit.com/r/dataisbeautiful/comments/18hyzto/oc_to_give_an_order_of_magnitude/)
+
+### Critique
+
+u/Quetzalcoatl\_\_ uses linear scales for population and area, leading to a lot of overlapping flags in the bottom left. Many comments suggest using log scales, which would spread out the flags and make it easier to extract more information from the figure.
+
+The figure could be more beautiful. I do not love the very abbreviated axis tick labels. I would also appreciate a title and caption. The biggest issue I have with the figure are the flags. Aesthetically, they are too small. While flags are a cute way to represent countries, not all flags are immediately recognizable by all (I'd argue *most*) people and they are not easy to look up compared to something like a country code. As an example, there's a green flag with a red dot that stands out in the bottom left of the figure. That flag represents Bangladesh, which I learned by searching "green flag with a red dot". This strategy does not scale well with flag design complexity. Using flags would be great for an interactive graphic where you could click on a flag and get a pop up providing additional context.
+
+The figure is based on data from <https://restcountries.com>. This is an interesting source. The webpage looks professional enough but its page describing the data fields available lacks satisfactory definitions (What is "geographical size"? Is it limited to land area or does it include water?). More worrisome, the webpage lacks details about the source and vintage of the data. Even if it is the most recent, accurate available data, there should still be some credit. The webpage's contributing section states:
+
+> Any help is always welcome! Just edit the relevant file and create a new Merge Request or you can also donate using Patreon or PayPal.
+
+Looking at the commit history on the underlying GitLab repository ([link](https://gitlab.com/restcountries/restcountries/-/commits/master)), it appears that the underlying data files are updated by hand.
+
+To be clear, I do not think the folks maintaining <https://restcountries.com> are purposely misleading people who use their service. However, I do think their service has some glaring problems that would make me hesitate using it over other sources. I will take a look at some of those other sources later on.
+
+## Replication
+
+In this section, I replicate u/Quetzalcoatl\_\_'s original figure as closely as I can.
+
+### Querying
+
+I'll start by querying restcountries.com's API. I am going to select more fields than strictly necessary for this replication for use in later sections.
+
+```{r}
+# Query data from restcountries.com
+# Fields
+# name: Country name, including common, official, and native spellings.
+# area: "Geographical size"
+# region: "UN demographic regions"
+# subregion: "UN demographic subregions"
+# population: Country population
+# flag: Country flag emoji
+# cca2: "ISO 3166-1 alpha-2 two-letter country codes"
+# cca3: "ISO 3166-1 alpha-3 three-letter country codes"
+restcountries_json <-
+  read_json(
+    "https://restcountries.com/v3.1/all?fields=name,area,region,subregion,population,flag,cca2,cca3"
+  )
+
+restcountries_json[[240]]
+
+```
+
+Above, we see how the data is returned from the API.
+
+### Digression: What is an entry?
+
+The example, Puetro Rico, illustrates something interesting about this data. Puetro Rico is a United States territory. Reasonable people could have different expectations for whether Puetro Rico (and similar entries like the United States Minor Outlying Islands) should be its own entry or a part of the United States entry. Data sources would clear this up by defining the unit of observation for a data set.
+
+The API returns 250 entries. The closest comparison I could find is the [List of countries and dependencies by population density](https://en.wikipedia.org/wiki/List_of_countries_and_dependencies_by_population_density) Wikipedia page, which lists 249 entries and cites the United Nations World Population Prospects data source. However, there are several entries on the restcountries.com data set that are not on the Wikipedia page table. There are other Wikipedia list pages that contain other, slightly different enumerations of countries in the mid-to-high 200s range, including [List of ISO 3166 country codes](https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes) and [List of countries and dependencies by population](https://en.wikipedia.org/wiki/List_of_countries_and_dependencies_by_population) (this is even different than the page on population density!!!).
+
+### Digression: What is geographical size?
+
+While we're looking at Puetro Rico, let's figure out what geographical size means. The [Geography of Puetro Rico](https://en.wikipedia.org/wiki/Geography_of_Puerto_Rico) Wikipedia article states:
+
+> With an area of 8,897 square kilometres (3,435 sq mi),^\[1\]^ it is the third largest island in the United States and the 82nd largest island in the world.
+
+Amusingly, this cites Encyclopedia Britannica, which still shows 8,897 square kilometers as of 2023-12-18.
+
+The main Puetro Rico Wikipedia page shows the total area as 9,104 square kilometers and a 1.6% water area, which works out to a land area of 8,958 square kilometers. This page appears to use the [CIA's World Factbook](https://www.cia.gov/the-world-factbook/countries/puerto-rico/) as its source of geographical area.
+
+Both of these alternatives are close to, though larger than, the restcountries.com data. The git blame for the specific line of the restcountries.com data file containing the 8,870 figure points to a commit with the message "Adding implementation for alt images", which changes over 26,000 lines of the data file.
+
+At the very least, we can reasonably conclude that the area is in square kilometer units and *probably* excludes water area.
+
+### Rectangling
+
+Next, we need to get the data into a rectangular format so that it is easier to work with. The `tidyr::hoist` function is great for transforming nested data structures like JSON into a rectangular data frame.
+
+```{r}
+# Convert nested list data into a data frame with a list column.
+dat <- tibble(json = restcountries_json) |>
+  
+  # Extract fields from the list column
+  hoist(
+    json,
+    name = list("name", "common"),
+    "cca2",
+    "cca3",
+    "region",
+    "subregion",
+    "area",
+    "flag",
+    "population"
+  ) |>
+  
+  # Drop the list column
+  select(-json)
+```
+
+### Creating the EU entry
+
+There is no entry in the data for the European Union. u/Quetzalcoatl\_\_ said they added it for comparison ([link to comment](https://www.reddit.com/r/dataisbeautiful/comments/18hyzto/comment/kddsun4/?utm_source=reddit&utm_medium=web2x&context=3)).
+
+We can identify EU countries using their country code. I copied these from the "List of member states" table on the [European Union](https://en.wikipedia.org/wiki/European_Union#Member_states) Wikipedia page.
+
+```{r}
+eu_countries <- c(
+  "Austria",
+  "Belgium",
+  "Bulgaria",
+  "Croatia",
+  "Cyprus",
+  "Czechia", # alt spelling used in the data
+  "Denmark",
+  "Estonia",
+  "Finland",
+  "France",
+  "Germany",
+  "Greece",
+  "Hungary",
+  "Ireland",
+  "Italy",
+  "Latvia",
+  "Lithuania",
+  "Luxembourg",
+  "Malta",
+  "Netherlands",
+  "Poland",
+  "Portugal",
+  "Romania",
+  "Slovakia",
+  "Slovenia",
+  "Spain",
+  "Sweden"
+)
+
+# Subset to EU countries
+eu_dat <- dat |>
+  filter(name %in% eu_countries)
+
+# Protect against typos
+testthat::expect_equal(nrow(eu_dat), length(eu_countries))
+
+# Aggregate to a single row
+eu_row <- eu_dat |>
+  summarize(
+    area = sum(area),
+    population = sum(population)
+  ) |>
+  mutate(
+    name = "European Union",
+    flag = "\ud83c\uddea\ud83c\uddfa",
+    .before = everything()
+  ) 
+
+# Stack with original data
+full_dat <- bind_rows(eu_row, dat)
+full_dat
+```
+
+### Creating the figure
+
+Creating a figure similar to the original is easy enough.
+
+```{r}
+full_dat |>
+  ggplot(aes(x = area, y = population)) +
+  geom_label(aes(label = flag), label.padding = unit(0.01, "lines"), label.size = 0.1)
+```
